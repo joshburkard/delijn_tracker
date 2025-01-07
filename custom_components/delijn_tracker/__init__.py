@@ -1,4 +1,4 @@
-﻿# custom_components/delijn_tracker/__init__.py
+# custom_components/delijn_tracker/__init__.py
 """The De Lijn Bus Tracker integration."""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-﻿# custom_components/delijn_tracker/sensor.py
+# custom_components/delijn_tracker/sensor.py
 """Support for De Lijn Bus Tracker sensors."""
 from __future__ import annotations
 

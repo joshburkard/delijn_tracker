@@ -1,4 +1,4 @@
-﻿{
+{
     "domain": "delijn_tracker",
     "name": "De Lijn Tracker",
     "config_flow": true,

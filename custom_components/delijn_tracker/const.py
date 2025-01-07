@@ -1,4 +1,4 @@
-﻿# custom_components/delijn_tracker/const.py
+# custom_components/delijn_tracker/const.py
 """Constants for the De Lijn Bus Tracker integration."""
 from typing import Final
 

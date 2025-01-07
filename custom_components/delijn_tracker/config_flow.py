@@ -1,4 +1,4 @@
-﻿# custom_components/delijn_tracker/config_flow.py
+# custom_components/delijn_tracker/config_flow.py
 """Config flow for De Lijn Bus Tracker integration."""
 from __future__ import annotations
 

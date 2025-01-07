@@ -1,4 +1,4 @@
-﻿# custom_components/delijn_tracker/api.py
+# custom_components/delijn_tracker/api.py
 """API client for De Lijn."""
 from __future__ import annotations
 
