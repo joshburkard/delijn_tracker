@@ -1,0 +1,11 @@
+﻿{
+    "domain": "delijn_tracker",
+    "name": "De Lijn Tracker",
+    "config_flow": true,
+    "documentation": "https://github.com/yourusername/ha-delijn",
+    "iot_class": "cloud_polling",
+    "version": "2025.01.07.001",
+    "requirements": [],
+    "dependencies": [],
+    "codeowners": ["@yourusername"]
+}
