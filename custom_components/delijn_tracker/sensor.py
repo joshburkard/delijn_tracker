@@ -97,10 +97,13 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
         # Get scheduled time for device name
         scheduled_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]  # Get HH:MM
 
+        # Get the vehicle type and ensure proper formatting
+        vehicle_type = device.get("vehicle_type", "Bus").upper()
+
         # Create device name
         device_name = (
             f"Halte {device[CONF_HALTE_NUMBER]} - "
-            f"Bus {line_number} - "
+            f"{vehicle_type} {line_number} - "
             f"{device[CONF_DESTINATION]} - "
             f"{scheduled_time}"
         )
