@@ -160,50 +160,75 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             time, ritnummer = scheduled_time.split("_")
             _LOGGER.debug("Processing selected time: %s with ritnummer: %s", time, ritnummer)
 
+            # Find the selected time entry
             selected_time = next(
                 t for t in self._available_times
                 if t["time"] == time and str(t["ritnummer"]) == ritnummer
             )
             _LOGGER.debug("Found selected time details: %s", selected_time)
 
-            # Prepare device data
+            # Get line details
+            try:
+                entities_response = await self._api._make_request("entiteiten")
+                line_details = None
+                entity_number = None
+
+                # Find the correct entity and line details
+                for entity in entities_response["entiteiten"]:
+                    try:
+                        line_response = await self._api._make_request(
+                            f"lijnen/{entity['entiteitnummer']}/{self._line_number}"
+                        )
+                        if isinstance(line_response, list):
+                            for line in line_response:
+                                if str(line.get("lijnnummer")) == self._line_number:
+                                    line_details = line
+                                    entity_number = entity['entiteitnummer']
+                                    break
+                        elif line_response:
+                            line_details = line_response
+                            entity_number = entity['entiteitnummer']
+                            break
+                    except Exception:
+                        continue
+            except Exception as err:
+                _LOGGER.error("Error getting line details: %s", err)
+                line_details = None
+                entity_number = None
+
+            # Prepare device data with all necessary information
             device_data = {
                 CONF_HALTE_NUMBER: self._halte_number,
                 CONF_LINE_NUMBER: self._line_number,
                 CONF_SCHEDULED_TIME: selected_time["timestamp"],
                 CONF_DESTINATION: selected_time["bestemming"],
-                "public_line": selected_time.get("public_line"),
-                "vehicle_type": selected_time.get("vehicle_type"),
-                "line_description": selected_time.get("line_description"),
+                "public_line": line_details.get("lijnnummerPubliek", self._line_number) if line_details else self._line_number,
+                "vehicle_type": line_details.get("vervoertype", "Bus") if line_details else "Bus",
+                "line_description": line_details.get("omschrijving", f"Line {self._line_number}") if line_details else f"Line {self._line_number}",
+                "entity_number": entity_number
             }
             _LOGGER.debug("Prepared device data: %s", device_data)
 
-            # Get entries
+            # Get entries and handle device addition
             entries = self.hass.config_entries.async_entries(DOMAIN)
-            _LOGGER.debug("Found %d existing entries", len(entries))
-
             if entries:
                 # Adding device to existing entry
                 entry = entries[0]
-                _LOGGER.debug("Working with existing entry: %s", entry.entry_id)
+                _LOGGER.debug("Found existing entry: %s", entry.entry_id)
                 _LOGGER.debug("Current entry data: %s", entry.data)
 
+                # Get existing data and add new device
                 existing_data = dict(entry.data)
                 devices = list(existing_data.get("devices", []))
-                _LOGGER.debug("Current devices: %s", devices)
-
                 devices.append(device_data)
                 existing_data["devices"] = devices
-
-                _LOGGER.debug("Updating entry with new data: %s", existing_data)
 
                 try:
                     self.hass.config_entries.async_update_entry(
                         entry,
                         data=existing_data
                     )
-                    _LOGGER.debug("Successfully updated entry")
-                    await self.hass.config_entries.async_reload(entry.entry_id)
+                    _LOGGER.debug("Successfully updated entry with new device")
                     return self.async_abort(reason="device_added")
                 except Exception as err:
                     _LOGGER.error("Error updating entry: %s", err, exc_info=True)
@@ -212,7 +237,6 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Creating new entry with first device
                 _LOGGER.debug("Creating new entry with first device")
                 title = "De Lijn Tracker"
-                _LOGGER.debug("Creating entry with title: %s", title)
                 return self.async_create_entry(
                     title=title,
                     data={
@@ -221,6 +245,7 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                 )
 
+        # Prepare time selection form
         time_options = {
             f"{time['time']}_{time['ritnummer']}": f"{time['time']} - {time['bestemming']}"
             for time in self._available_times

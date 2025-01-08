@@ -1,7 +1,7 @@
 """Support for De Lijn Bus Tracker sensors."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -91,24 +91,28 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             f"{entry.entry_id}_{device[CONF_HALTE_NUMBER]}_{device[CONF_LINE_NUMBER]}_{description.key}"
         )
 
+        # Get the line number (use public_line if available, otherwise line_number)
+        line_number = device.get("public_line") or device[CONF_LINE_NUMBER]
+
         # Get scheduled time for device name
         scheduled_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]  # Get HH:MM
 
-        # Format device name
+        # Create device name
         device_name = (
             f"Halte {device[CONF_HALTE_NUMBER]} - "
-            f"Bus {device.get('public_line', device[CONF_LINE_NUMBER])} - "
+            f"Bus {line_number} - "
             f"{device[CONF_DESTINATION]} - "
             f"{scheduled_time}"
         )
 
         self._attr_name = f"{device_name} {description.name}"
+
+        # Set device info without via_device
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}_{device[CONF_HALTE_NUMBER]}_{device[CONF_LINE_NUMBER]}")},
             name=device_name,
             manufacturer="De Lijn",
             model=device.get("vehicle_type", "Bus"),
-            via_device=(DOMAIN, entry.entry_id),
         )
         _LOGGER.debug("Sensor initialized with name: %s", self._attr_name)
 
@@ -116,10 +120,10 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
         if not self.coordinator.data:
+            _LOGGER.debug("No coordinator data available")
             return None
 
         try:
-            # Get device identifier
             device_id = f"{self._device[CONF_HALTE_NUMBER]}_{self._device[CONF_LINE_NUMBER]}"
             device_data = self.coordinator.data.get(device_id, {})
 
@@ -127,20 +131,40 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                 _LOGGER.debug("No data found for device %s", device_id)
                 return None
 
-            # Get newest schedule entry
-            schedule = next(iter(device_data.get("schedule", [])), None)
+            scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
+            _LOGGER.debug("Looking for schedule time: %s", scheduled_time)
+
+            # Get schedule entry matching our time
+            schedule = next(
+                (time for time in device_data.get("schedule", [])
+                 if time["time"] == scheduled_time),
+                None
+            )
+
             if not schedule:
-                _LOGGER.debug("No schedule found for device %s", device_id)
+                _LOGGER.debug("No matching schedule found for time %s", scheduled_time)
                 return None
 
+            _LOGGER.debug("Found schedule: %s", schedule)
             realtime = device_data.get("realtime", {})
-            _LOGGER.debug("Processing sensor value with schedule: %s and realtime: %s", schedule, realtime)
+            _LOGGER.debug("Realtime data: %s", realtime)
 
             if self.entity_description.key == "waiting_time":
-                return schedule.get("waiting_time")
+                now = datetime.now()
+                scheduled_time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
+
+                # If the time is in the past, add days until it's in the future
+                while scheduled_time < now:
+                    scheduled_time = scheduled_time + timedelta(days=1)
+
+                waiting_time = round((scheduled_time - now).total_seconds() / 60)
+                return waiting_time
+
             elif self.entity_description.key == "delay":
                 if realtime and realtime.get("realtime_time"):
-                    return realtime.get("delay_minutes")
+                    real_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
+                    sched_time = datetime.fromisoformat(realtime["dienstregelingTijdstip"].replace('Z', '+00:00'))
+                    return round((real_time - sched_time).total_seconds() / 60)
 
             return None
 

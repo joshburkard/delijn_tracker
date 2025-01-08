@@ -1,5 +1,3 @@
-# custom_components/delijn_tracker/__init__.py
-
 """The De Lijn Bus Tracker integration."""
 from __future__ import annotations
 
@@ -37,25 +35,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up De Lijn Bus Tracker from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    _LOGGER.debug("Setting up De Lijn entry with data: %s", entry.data)
+    _LOGGER.debug("Setting up De Lijn integration with entry: %s", entry.entry_id)
+    _LOGGER.debug("Entry data: %s", entry.data)
 
-    # Create API instance
     api = DeLijnApi(
         async_get_clientsession(hass),
         entry.data[CONF_API_KEY],
     )
 
-    # Create coordinator
     coordinator = DeLijnDataUpdateCoordinator(hass, api, entry)
-
-    # Do first refresh
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register update listener
     entry.async_on_unload(
         entry.add_update_listener(update_listener)
     )
@@ -90,64 +84,100 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
         )
         self.api = api
         self.entry = entry
-        _LOGGER.debug("Initialized coordinator with entry data: %s", entry.data)
+        self.last_data = {}
+        _LOGGER.debug("Initialized coordinator with entry: %s", entry.entry_id)
 
     async def _async_update_data(self):
         """Fetch data from De Lijn."""
         try:
             async with async_timeout.timeout(30):
                 data = {}
+                success_count = 0
+                error_count = 0
 
-                _LOGGER.debug("Starting data update for entry: %s", self.entry.entry_id)
                 devices = self.entry.data.get("devices", [])
-                _LOGGER.debug("Found %d devices to update", len(devices))
+                _LOGGER.debug("Starting update for %d devices", len(devices))
 
-                # Fetch data for each device
                 for device in devices:
                     try:
-                        device_id = f"{device[CONF_HALTE_NUMBER]}_{device[CONF_LINE_NUMBER]}"
-                        _LOGGER.debug("Processing device %s", device_id)
+                        halte = device[CONF_HALTE_NUMBER]
+                        line = device[CONF_LINE_NUMBER]
+                        device_id = f"{halte}_{line}"
+                        target_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
 
-                        # Get schedule data for current/future times with specified target time
-                        schedule_times = await self.api.get_schedule_times(
-                            device[CONF_HALTE_NUMBER],
-                            device[CONF_LINE_NUMBER],
-                            target_time=device[CONF_SCHEDULED_TIME].split("T")[1][:5]  # Get HH:MM
+                        _LOGGER.debug(
+                            "Fetching data for halte: %s, line: %s, time: %s",
+                            halte, line, target_time
                         )
-                        _LOGGER.debug("Got schedule times: %s", schedule_times)
 
-                        # Get real-time data if available
-                        realtime_data = {}
+                        schedule_times = await self.api.get_schedule_times(
+                            halte,
+                            line,
+                            target_time=target_time
+                        )
+
                         if schedule_times:
-                            next_departure = schedule_times[0]
+                            _LOGGER.debug(
+                                "Found %d schedule times for device %s",
+                                len(schedule_times), device_id
+                            )
                             realtime_data = await self.api.get_realtime_data(
-                                device[CONF_HALTE_NUMBER],
-                                device[CONF_LINE_NUMBER],
+                                halte,
+                                line,
                                 device[CONF_SCHEDULED_TIME]
                             )
-                            _LOGGER.debug("Got realtime data: %s", realtime_data)
 
-                            # Calculate delay if realtime data is available
-                            if realtime_data and realtime_data.get("realtime_time"):
-                                real_time = datetime.fromisoformat(realtime_data["realtime_time"].replace('Z', '+00:00'))
-                                sched_time = datetime.fromisoformat(realtime_data["dienstregelingTijdstip"].replace('Z', '+00:00'))
-                                delay = round((real_time - sched_time).total_seconds() / 60)
-                                realtime_data["delay_minutes"] = delay
-
-                        data[device_id] = {
-                            "schedule": schedule_times,
-                            "realtime": realtime_data,
-                        }
-                        _LOGGER.debug("Updated data for device %s: %s", device_id, data[device_id])
+                            data[device_id] = {
+                                "schedule": schedule_times,
+                                "realtime": realtime_data,
+                            }
+                            success_count += 1
+                        else:
+                            _LOGGER.warning(
+                                "No schedule times found for halte %s, line %s",
+                                halte, line
+                            )
+                            if device_id in self.last_data:
+                                data[device_id] = self.last_data[device_id]
+                                _LOGGER.debug(
+                                    "Using cached data for device %s",
+                                    device_id
+                                )
+                            error_count += 1
 
                     except Exception as err:
-                        _LOGGER.error("Error updating device %s: %s", device_id, err)
-                        # Continue with other devices if one fails
+                        _LOGGER.error(
+                            "Error updating device %s: %s",
+                            device_id, err,
+                            exc_info=True
+                        )
+                        if device_id in self.last_data:
+                            data[device_id] = self.last_data[device_id]
+                            _LOGGER.debug(
+                                "Using cached data for device %s after error",
+                                device_id
+                            )
+                        error_count += 1
                         continue
 
-                _LOGGER.debug("Completed data update with data: %s", data)
-                return data
+                _LOGGER.debug(
+                    "Update completed - Success: %d, Errors: %d, Total devices: %d",
+                    success_count, error_count, len(devices)
+                )
+
+                if data:
+                    self.last_data = data
+                    return data
+                elif self.last_data:
+                    _LOGGER.warning("No new data received, using cached data")
+                    return self.last_data
+                else:
+                    _LOGGER.error("No data available and no cache available")
+                    return {}
 
         except Exception as err:
             _LOGGER.error("Error fetching data: %s", err, exc_info=True)
+            if self.last_data:
+                _LOGGER.warning("Using cached data due to update error")
+                return self.last_data
             raise UpdateFailed(f"Error communicating with API: {err}")
