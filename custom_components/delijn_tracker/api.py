@@ -25,6 +25,9 @@ class DeLijnApi:
         url = f"{self._base_url}/{endpoint}"
         _LOGGER.debug("Making request to: %s", url)
         async with self._session.get(url, headers=headers) as response:
+            if response.status == 404:
+                _LOGGER.warning("404 Not Found: %s", url)
+                return None
             response.raise_for_status()
             return await response.json()
 
@@ -33,6 +36,9 @@ class DeLijnApi:
         headers = {'Ocp-Apim-Subscription-Key': self._api_key}
         _LOGGER.debug("Making request to: %s", url)
         async with self._session.get(url, headers=headers) as response:
+            if response.status == 404:
+                _LOGGER.warning("404 Not Found: %s", url)
+                return None
             response.raise_for_status()
             return await response.json()
 
@@ -116,15 +122,15 @@ class DeLijnApi:
             lines = []
             for lr in lijnrichtingen_data.get("lijnrichtingen", []):
                 try:
-                    # Get line details
                     line_data = await self._make_request(
                         f"lijnen/1/{lr['lijnnummer']}/lijnrichtingen/HEEN"
                     )
-                    lines.append({
-                        "lijnnummer": lr["lijnnummer"],
-                        "omschrijving": line_data.get("omschrijving", ""),
-                        "bestemming": line_data.get("bestemming", "Unknown"),
-                    })
+                    if line_data:
+                        lines.append({
+                            "lijnnummer": lr["lijnnummer"],
+                            "omschrijving": line_data.get("omschrijving", ""),
+                            "bestemming": line_data.get("bestemming", "Unknown"),
+                        })
                 except Exception as e:
                     _LOGGER.warning("Error getting line details for %s: %s", lr.get("lijnnummer"), e)
 
@@ -264,36 +270,6 @@ class DeLijnApi:
 
             return sorted(processed_times, key=lambda x: x["waiting_time"])
 
-            # Process each doorkomst
-            processed_times = []
-            current_time = datetime.now()
-
-            for doorkomst in doorkomsten:
-                scheduled_time_str = doorkomst.get("dienstregelingTijdstip")
-                if not scheduled_time_str:
-                    continue
-
-                try:
-                    scheduled_time = datetime.fromisoformat(scheduled_time_str.replace('Z', '+00:00'))
-                    waiting_time = (scheduled_time - current_time).total_seconds() / 60
-
-                    time_entry = {
-                        "time": scheduled_time.strftime("%H:%M"),
-                        "timestamp": scheduled_time_str,
-                        "waiting_time": round(waiting_time),
-                        "bestemming": doorkomst.get("bestemming", "Unknown"),
-                        "ritnummer": doorkomst.get("ritnummer"),
-                        "vehicle_type": line_detail.get("vervoertype"),
-                        "public_line": line_detail.get("lijnnummerPubliek", line_number),
-                        "line_description": line_detail.get("omschrijving"),
-                    }
-                    processed_times.append(time_entry)
-
-                except Exception as e:
-                    _LOGGER.warning("Error processing time %s: %s", scheduled_time_str, e)
-
-            return sorted(processed_times, key=lambda x: x["waiting_time"])
-
         except Exception as err:
             _LOGGER.error("Error fetching schedule data: %s", err)
             raise
@@ -314,37 +290,6 @@ class DeLijnApi:
         except Exception as err:
             _LOGGER.error("Error getting line details: %s", err)
             return {}
-
-            # Filter for future times
-            current_time = datetime.now()
-            times = []
-
-            for doorkomst in doorkomsten:
-                scheduled_time_str = doorkomst.get("dienstregelingTijdstip")
-                if not scheduled_time_str:
-                    continue
-
-                try:
-                    scheduled_time = datetime.fromisoformat(scheduled_time_str.replace('Z', '+00:00'))
-                    if scheduled_time > current_time:
-                        time_entry = {
-                            "time": scheduled_time.strftime("%H:%M"),
-                            "bestemming": doorkomst["bestemming"],
-                            "timestamp": scheduled_time_str,
-                            "ritnummer": doorkomst["ritnummer"]
-                        }
-                        _LOGGER.debug("Adding time entry: %s", time_entry)
-                        times.append(time_entry)
-
-                except Exception as e:
-                    _LOGGER.warning("Error processing time %s: %s", scheduled_time_str, e)
-
-            _LOGGER.debug("Returning %d schedule times", len(times))
-            return sorted(times, key=lambda x: x["time"])
-
-        except Exception as err:
-            _LOGGER.error("Error fetching schedule data: %s", err)
-            raise
 
     async def get_realtime_data(
         self,

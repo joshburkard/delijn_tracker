@@ -1,4 +1,3 @@
-# custom_components/delijn_tracker/config_flow.py
 """Config flow for De Lijn Bus Tracker integration."""
 from __future__ import annotations
 
@@ -44,50 +43,74 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step."""
+        errors = {}
+
+        # Check if we already have an entry
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        if entries:
+            # Get API key from existing entry
+            entry = entries[0]
+            self._api_key = entry.data[CONF_API_KEY]
+            self._api = DeLijnApi(
+                async_get_clientsession(self.hass),
+                self._api_key,
+            )
+            return await self.async_step_halte()
+
+        # First time setup - ask for API key
         if user_input is None:
             return self.async_show_form(
                 step_id=STEP_USER,
                 data_schema=vol.Schema({
                     vol.Required(CONF_API_KEY): str,
-                    vol.Required(CONF_HALTE_NUMBER): str,
                 })
             )
 
-        errors = {}
-        self._api = DeLijnApi(
-            async_get_clientsession(self.hass),
-            user_input[CONF_API_KEY],
-        )
-        self._api_key = user_input[CONF_API_KEY]
-        self._halte_number = user_input[CONF_HALTE_NUMBER]
-
+        # Validate API key
         try:
-            # Try to get halte info to validate both API key and halte number
-            _LOGGER.debug("Getting available lines for halte %s", self._halte_number)
-            self._available_lines = await self._api.get_available_lines(self._halte_number)
-            _LOGGER.debug("Got available lines: %s", self._available_lines)
+            self._api = DeLijnApi(
+                async_get_clientsession(self.hass),
+                user_input[CONF_API_KEY],
+            )
+            self._api_key = user_input[CONF_API_KEY]
 
-            if not self._available_lines:
-                errors["base"] = "no_lines_available"
-                return self.async_show_form(
-                    step_id=STEP_USER,
-                    data_schema=vol.Schema({
-                        vol.Required(CONF_API_KEY): str,
-                        vol.Required(CONF_HALTE_NUMBER): str,
-                    }),
-                    errors=errors,
-                )
-
-            return await self.async_step_select_line()
-
+            # Store API key and continue to halte selection
+            _LOGGER.debug("API key validated, continuing to halte selection")
+            return await self.async_step_halte()
         except Exception as err:
-            _LOGGER.error("Error validating config: %s", err)
+            _LOGGER.error("Error validating API key: %s", err)
             errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id=STEP_USER,
             data_schema=vol.Schema({
                 vol.Required(CONF_API_KEY): str,
+            }),
+            errors=errors,
+        )
+
+    async def async_step_halte(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle halte number input."""
+        errors = {}
+
+        if user_input is not None:
+            self._halte_number = user_input[CONF_HALTE_NUMBER]
+            try:
+                _LOGGER.debug("Getting available lines for halte %s", self._halte_number)
+                self._available_lines = await self._api.get_available_lines(self._halte_number)
+                if not self._available_lines:
+                    errors["base"] = "no_lines_available"
+                else:
+                    return await self.async_step_select_line()
+            except Exception as err:
+                _LOGGER.error("Error getting lines: %s", err)
+                errors["base"] = "cannot_connect"
+
+        return self.async_show_form(
+            step_id="halte",
+            data_schema=vol.Schema({
                 vol.Required(CONF_HALTE_NUMBER): str,
             }),
             errors=errors,
@@ -99,7 +122,6 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle line selection."""
         if user_input is not None:
             self._line_number = user_input[CONF_LINE_NUMBER]
-
             try:
                 _LOGGER.debug("Getting schedule times for halte %s, line %s",
                             self._halte_number, self._line_number)
@@ -107,13 +129,10 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._halte_number,
                     self._line_number,
                 )
-                _LOGGER.debug("Got available times: %s", self._available_times)
-
                 if self._available_times:
                     return await self.async_step_select_time()
                 else:
                     return self.async_abort(reason="no_times_available")
-
             except Exception as err:
                 _LOGGER.error("Error getting schedule times: %s", err)
                 return self.async_abort(reason="cannot_connect")
@@ -134,28 +153,73 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle time selection."""
+        _LOGGER.debug("Starting async_step_select_time with user_input: %s", user_input)
+
         if user_input is not None:
             scheduled_time = user_input[CONF_SCHEDULED_TIME]
             time, ritnummer = scheduled_time.split("_")
+            _LOGGER.debug("Processing selected time: %s with ritnummer: %s", time, ritnummer)
 
             selected_time = next(
                 t for t in self._available_times
                 if t["time"] == time and str(t["ritnummer"]) == ritnummer
             )
+            _LOGGER.debug("Found selected time details: %s", selected_time)
 
-            # Create config entry
-            title = f"Halte {self._halte_number} - Bus {self._line_number} - {time}"
+            # Prepare device data
+            device_data = {
+                CONF_HALTE_NUMBER: self._halte_number,
+                CONF_LINE_NUMBER: self._line_number,
+                CONF_SCHEDULED_TIME: selected_time["timestamp"],
+                CONF_DESTINATION: selected_time["bestemming"],
+                "public_line": selected_time.get("public_line"),
+                "vehicle_type": selected_time.get("vehicle_type"),
+                "line_description": selected_time.get("line_description"),
+            }
+            _LOGGER.debug("Prepared device data: %s", device_data)
 
-            return self.async_create_entry(
-                title=title,
-                data={
-                    CONF_API_KEY: self._api_key,
-                    CONF_HALTE_NUMBER: self._halte_number,
-                    CONF_LINE_NUMBER: self._line_number,
-                    CONF_SCHEDULED_TIME: selected_time["timestamp"],  # Use the full timestamp
-                    CONF_DESTINATION: selected_time["bestemming"],
-                }
-            )
+            # Get entries
+            entries = self.hass.config_entries.async_entries(DOMAIN)
+            _LOGGER.debug("Found %d existing entries", len(entries))
+
+            if entries:
+                # Adding device to existing entry
+                entry = entries[0]
+                _LOGGER.debug("Working with existing entry: %s", entry.entry_id)
+                _LOGGER.debug("Current entry data: %s", entry.data)
+
+                existing_data = dict(entry.data)
+                devices = list(existing_data.get("devices", []))
+                _LOGGER.debug("Current devices: %s", devices)
+
+                devices.append(device_data)
+                existing_data["devices"] = devices
+
+                _LOGGER.debug("Updating entry with new data: %s", existing_data)
+
+                try:
+                    self.hass.config_entries.async_update_entry(
+                        entry,
+                        data=existing_data
+                    )
+                    _LOGGER.debug("Successfully updated entry")
+                    await self.hass.config_entries.async_reload(entry.entry_id)
+                    return self.async_abort(reason="device_added")
+                except Exception as err:
+                    _LOGGER.error("Error updating entry: %s", err, exc_info=True)
+                    raise
+            else:
+                # Creating new entry with first device
+                _LOGGER.debug("Creating new entry with first device")
+                title = "De Lijn Tracker"
+                _LOGGER.debug("Creating entry with title: %s", title)
+                return self.async_create_entry(
+                    title=title,
+                    data={
+                        CONF_API_KEY: self._api_key,
+                        "devices": [device_data]
+                    }
+                )
 
         time_options = {
             f"{time['time']}_{time['ritnummer']}": f"{time['time']} - {time['bestemming']}"
