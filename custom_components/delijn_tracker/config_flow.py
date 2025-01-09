@@ -8,84 +8,73 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_API_KEY
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api import DeLijnApi
 from .const import (
     DOMAIN,
     CONF_HALTE_NUMBER,
     CONF_LINE_NUMBER,
     CONF_SCHEDULED_TIME,
     CONF_DESTINATION,
-    STEP_USER,
-    STEP_SELECT_LINE,
-    STEP_SELECT_TIME,
 )
-from .api import DeLijnApi
 
 _LOGGER = logging.getLogger(__name__)
 
-class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for De Lijn Bus Tracker."""
+DATA_SCHEMA = vol.Schema({
+    vol.Required(CONF_API_KEY): str,
+})
+
+class DeLijnTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for De Lijn Tracker integration."""
 
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize flow."""
+        """Initialize the config flow."""
         self._api: DeLijnApi | None = None
         self._api_key: str | None = None
         self._halte_number: str | None = None
         self._available_lines: list[dict[str, Any]] | None = None
         self._line_number: str | None = None
         self._available_times: list[dict[str, Any]] | None = None
+        self._entity_number: str | None = None
+        self._existing_entry: config_entries.ConfigEntry | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the initial step."""
+        """Handle a flow initialized by the user."""
         errors = {}
 
-        # Check if we already have an entry
-        entries = self.hass.config_entries.async_entries(DOMAIN)
-        if entries:
-            # Get API key from existing entry
-            entry = entries[0]
-            self._api_key = entry.data[CONF_API_KEY]
+        if existing_entries := self._async_current_entries():
+            self._existing_entry = existing_entries[0]
+            self._api_key = self._existing_entry.data[CONF_API_KEY]
             self._api = DeLijnApi(
                 async_get_clientsession(self.hass),
                 self._api_key,
             )
             return await self.async_step_halte()
 
-        # First time setup - ask for API key
-        if user_input is None:
-            return self.async_show_form(
-                step_id=STEP_USER,
-                data_schema=vol.Schema({
-                    vol.Required(CONF_API_KEY): str,
-                })
-            )
-
-        # Validate API key
-        try:
-            self._api = DeLijnApi(
-                async_get_clientsession(self.hass),
-                user_input[CONF_API_KEY],
-            )
-            self._api_key = user_input[CONF_API_KEY]
-
-            # Store API key and continue to halte selection
-            _LOGGER.debug("API key validated, continuing to halte selection")
-            return await self.async_step_halte()
-        except Exception as err:
-            _LOGGER.error("Error validating API key: %s", err)
-            errors["base"] = "cannot_connect"
+        if user_input is not None:
+            try:
+                api = DeLijnApi(
+                    async_get_clientsession(self.hass),
+                    user_input[CONF_API_KEY],
+                )
+                await api.validate_config("100", "1")
+                self._api = api
+                self._api_key = user_input[CONF_API_KEY]
+                return await self.async_step_halte()
+            except Exception:
+                _LOGGER.exception("Failed to connect to De Lijn API")
+                errors["base"] = "cannot_connect"
 
         return self.async_show_form(
-            step_id=STEP_USER,
-            data_schema=vol.Schema({
-                vol.Required(CONF_API_KEY): str,
-            }),
+            step_id="user",
+            data_schema=DATA_SCHEMA,
             errors=errors,
         )
 
@@ -96,16 +85,14 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            self._halte_number = user_input[CONF_HALTE_NUMBER]
             try:
-                _LOGGER.debug("Getting available lines for halte %s", self._halte_number)
+                self._halte_number = user_input[CONF_HALTE_NUMBER]
                 self._available_lines = await self._api.get_available_lines(self._halte_number)
-                if not self._available_lines:
-                    errors["base"] = "no_lines_available"
-                else:
+                if self._available_lines:
                     return await self.async_step_select_line()
-            except Exception as err:
-                _LOGGER.error("Error getting lines: %s", err)
+                errors["base"] = "no_lines_available"
+            except Exception:
+                _LOGGER.exception("Failed to get available lines")
                 errors["base"] = "cannot_connect"
 
         return self.async_show_form(
@@ -120,140 +107,147 @@ class DeLijnConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle line selection."""
+        errors = {}
+
         if user_input is not None:
-            self._line_number = user_input[CONF_LINE_NUMBER]
             try:
-                _LOGGER.debug("Getting schedule times for halte %s, line %s",
-                            self._halte_number, self._line_number)
+                selected_line = next(
+                    line for line in self._available_lines
+                    if str(line["lijnnummer"]) == user_input[CONF_LINE_NUMBER]
+                )
+
+                self._line_number = str(selected_line["lijnnummer"])
+                self._entity_number = selected_line.get("entity_number")
+
+                _LOGGER.debug(
+                    "Getting schedule times for halte %s, line %s",
+                    self._halte_number,
+                    self._line_number
+                )
+
                 self._available_times = await self._api.get_schedule_times(
                     self._halte_number,
                     self._line_number,
+                    entity_number=self._entity_number
                 )
+
                 if self._available_times:
                     return await self.async_step_select_time()
-                else:
-                    return self.async_abort(reason="no_times_available")
+
+                errors["base"] = "no_times_available"
             except Exception as err:
-                _LOGGER.error("Error getting schedule times: %s", err)
-                return self.async_abort(reason="cannot_connect")
+                _LOGGER.exception("Failed to get schedule times: %s", err)
+                errors["base"] = "cannot_connect"
+
+        if not self._available_lines:
+            return await self.async_step_halte()
 
         line_options = {
-            str(line["lijnnummer"]): f"Line {line['lijnnummer']} - {line['omschrijving']}"
+            str(line["lijnnummer"]): f"Line {line['lijnnummer']} - {line.get('omschrijving', '')}"
             for line in self._available_lines
         }
 
         return self.async_show_form(
-            step_id=STEP_SELECT_LINE,
+            step_id="select_line",
             data_schema=vol.Schema({
                 vol.Required(CONF_LINE_NUMBER): vol.In(line_options)
-            })
+            }),
+            errors=errors,
         )
 
     async def async_step_select_time(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle time selection."""
-        _LOGGER.debug("Starting async_step_select_time with user_input: %s", user_input)
-
         if user_input is not None:
             scheduled_time = user_input[CONF_SCHEDULED_TIME]
             time, ritnummer = scheduled_time.split("_")
-            _LOGGER.debug("Processing selected time: %s with ritnummer: %s", time, ritnummer)
 
-            # Find the selected time entry
             selected_time = next(
                 t for t in self._available_times
                 if t["time"] == time and str(t["ritnummer"]) == ritnummer
             )
-            _LOGGER.debug("Found selected time details: %s", selected_time)
 
-            # Get line details
-            try:
-                entities_response = await self._api._make_request("entiteiten")
-                line_details = None
-                entity_number = None
-
-                # Find the correct entity and line details
-                for entity in entities_response["entiteiten"]:
-                    try:
-                        line_response = await self._api._make_request(
-                            f"lijnen/{entity['entiteitnummer']}/{self._line_number}"
-                        )
-                        if isinstance(line_response, list):
-                            for line in line_response:
-                                if str(line.get("lijnnummer")) == self._line_number:
-                                    line_details = line
-                                    entity_number = entity['entiteitnummer']
-                                    break
-                        elif line_response:
-                            line_details = line_response
-                            entity_number = entity['entiteitnummer']
-                            break
-                    except Exception:
-                        continue
-            except Exception as err:
-                _LOGGER.error("Error getting line details: %s", err)
-                line_details = None
-                entity_number = None
-
-            # Prepare device data with all necessary information
+            device_unique_id = f"{self._halte_number}_{self._line_number}_{time}"
             device_data = {
                 CONF_HALTE_NUMBER: self._halte_number,
                 CONF_LINE_NUMBER: self._line_number,
                 CONF_SCHEDULED_TIME: selected_time["timestamp"],
                 CONF_DESTINATION: selected_time["bestemming"],
-                "public_line": line_details.get("lijnnummerPubliek", self._line_number) if line_details else self._line_number,
-                "vehicle_type": line_details.get("vervoertype", "Bus") if line_details else "Bus",
-                "line_description": line_details.get("omschrijving", f"Line {self._line_number}") if line_details else f"Line {self._line_number}",
-                "entity_number": entity_number
+                "public_line": self._line_number,
+                "vehicle_type": "Bus",
+                "line_description": f"Line {self._line_number}",
+                "entity_number": self._entity_number,
+                "unique_id": device_unique_id
             }
-            _LOGGER.debug("Prepared device data: %s", device_data)
 
-            # Get entries and handle device addition
-            entries = self.hass.config_entries.async_entries(DOMAIN)
-            if entries:
-                # Adding device to existing entry
-                entry = entries[0]
-                _LOGGER.debug("Found existing entry: %s", entry.entry_id)
-                _LOGGER.debug("Current entry data: %s", entry.data)
+            if self._existing_entry:
+                new_data = dict(self._existing_entry.data)
+                devices = list(new_data.get("devices", []))
 
-                # Get existing data and add new device
-                existing_data = dict(entry.data)
-                devices = list(existing_data.get("devices", []))
-                devices.append(device_data)
-                existing_data["devices"] = devices
-
-                try:
-                    self.hass.config_entries.async_update_entry(
-                        entry,
-                        data=existing_data
-                    )
-                    _LOGGER.debug("Successfully updated entry with new device")
-                    return self.async_abort(reason="device_added")
-                except Exception as err:
-                    _LOGGER.error("Error updating entry: %s", err, exc_info=True)
-                    raise
-            else:
-                # Creating new entry with first device
-                _LOGGER.debug("Creating new entry with first device")
-                title = "De Lijn Tracker"
-                return self.async_create_entry(
-                    title=title,
-                    data={
-                        CONF_API_KEY: self._api_key,
-                        "devices": [device_data]
-                    }
+                # Check if device already exists
+                device_exists = any(
+                    dev.get("unique_id") == device_unique_id
+                    for dev in devices
                 )
 
-        # Prepare time selection form
+                if device_exists:
+                    return self.async_abort(reason="already_configured")
+
+                # Add new device
+                devices.append(device_data)
+                new_data["devices"] = devices
+
+                self.hass.config_entries.async_update_entry(
+                    self._existing_entry,
+                    data=new_data
+                )
+                return self.async_abort(reason="device_added")
+
+            return self.async_create_entry(
+                title="De Lijn Tracker",
+                data={
+                    CONF_API_KEY: self._api_key,
+                    "devices": [device_data]
+                }
+            )
+
         time_options = {
             f"{time['time']}_{time['ritnummer']}": f"{time['time']} - {time['bestemming']}"
             for time in self._available_times
         }
 
         return self.async_show_form(
-            step_id=STEP_SELECT_TIME,
+            step_id="select_time",
             data_schema=vol.Schema({
                 vol.Required(CONF_SCHEDULED_TIME): vol.In(time_options)
-            })
+            }),
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the options flow."""
+        return OptionsFlowHandler(config_entry)
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle De Lijn Tracker options."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({}),
         )

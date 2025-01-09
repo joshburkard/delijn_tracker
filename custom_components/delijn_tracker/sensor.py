@@ -1,8 +1,8 @@
 """Support for De Lijn Bus Tracker sensors."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -30,7 +30,7 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
         key="waiting_time",
         name="Waiting Time",
         icon="mdi:clock",
-        native_unit_of_measurement="min",
+        native_unit_of_measurement=None,
     ),
     SensorEntityDescription(
         key="delay",
@@ -39,35 +39,6 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement="min",
     ),
 )
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up De Lijn Bus Tracker sensors based on a config entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-
-    _LOGGER.debug("Setting up sensors for entry: %s", entry.entry_id)
-    _LOGGER.debug("Entry data: %s", entry.data)
-
-    entities = []
-    devices = entry.data.get("devices", [])
-    _LOGGER.debug("Found %d devices to set up", len(devices))
-
-    for device in devices:
-        _LOGGER.debug("Creating sensors for device: %s", device)
-        for description in SENSOR_TYPES:
-            entities.append(
-                DeLijnSensor(
-                    coordinator=coordinator,
-                    entry=entry,
-                    device=device,
-                    description=description,
-                )
-            )
-
-    async_add_entities(entities)
 
 class DeLijnSensor(CoordinatorEntity, SensorEntity):
     """Representation of a De Lijn sensor."""
@@ -84,20 +55,20 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
         self.entity_description = description
         self._entry = entry
         self._device = device
-        _LOGGER.debug("Initializing sensor for device: %s with description: %s", device, description)
 
-        # Set unique ID for each sensor
-        self._attr_unique_id = (
-            f"{entry.entry_id}_{device[CONF_HALTE_NUMBER]}_{device[CONF_LINE_NUMBER]}_{description.key}"
+        # Create a unique device identifier
+        device_unique_id = (
+            f"{device[CONF_HALTE_NUMBER]}_"
+            f"{device[CONF_LINE_NUMBER]}_"
+            f"{device[CONF_SCHEDULED_TIME].split('T')[1][:5]}"
         )
 
-        # Get the line number (use public_line if available, otherwise line_number)
+        # Set unique ID for sensor
+        self._attr_unique_id = f"{entry.entry_id}_{device_unique_id}_{description.key}"
+
+        # Get the line number
         line_number = device.get("public_line") or device[CONF_LINE_NUMBER]
-
-        # Get scheduled time for device name
-        scheduled_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]  # Get HH:MM
-
-        # Get the vehicle type and ensure proper formatting
+        scheduled_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
         vehicle_type = device.get("vehicle_type", "Bus").upper()
 
         # Create device name
@@ -110,20 +81,18 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
 
         self._attr_name = f"{device_name} {description.name}"
 
-        # Set device info without via_device
+        # Set device info
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry.entry_id}_{device[CONF_HALTE_NUMBER]}_{device[CONF_LINE_NUMBER]}")},
+            identifiers={(DOMAIN, f"{entry.entry_id}_{device_unique_id}")},
             name=device_name,
             manufacturer="De Lijn",
             model=device.get("vehicle_type", "Bus"),
         )
-        _LOGGER.debug("Sensor initialized with name: %s", self._attr_name)
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> str | int | None:
         """Return the state of the sensor."""
         if not self.coordinator.data:
-            _LOGGER.debug("No coordinator data available")
             return None
 
         try:
@@ -131,13 +100,9 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             device_data = self.coordinator.data.get(device_id, {})
 
             if not device_data:
-                _LOGGER.debug("No data found for device %s", device_id)
                 return None
 
             scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
-            _LOGGER.debug("Looking for schedule time: %s", scheduled_time)
-
-            # Get schedule entry matching our time
             schedule = next(
                 (time for time in device_data.get("schedule", [])
                  if time["time"] == scheduled_time),
@@ -145,25 +110,43 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             )
 
             if not schedule:
-                _LOGGER.debug("No matching schedule found for time %s", scheduled_time)
                 return None
-
-            _LOGGER.debug("Found schedule: %s", schedule)
-            realtime = device_data.get("realtime", {})
-            _LOGGER.debug("Realtime data: %s", realtime)
 
             if self.entity_description.key == "waiting_time":
                 now = datetime.now()
-                scheduled_time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
+                realtime = device_data.get("realtime", {})
 
-                # If the time is in the past, add days until it's in the future
-                while scheduled_time < now:
-                    scheduled_time = scheduled_time + timedelta(days=1)
+                # Check for realtime data
+                if realtime and realtime.get("realtime_time"):
+                    # Use realtime prediction
+                    target_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
 
-                waiting_time = round((scheduled_time - now).total_seconds() / 60)
-                return waiting_time
+                    # If the realtime prediction is in the past, show "00:00"
+                    if target_time < now:
+                        return "00:00"
+                else:
+                    # Use scheduled time
+                    target_time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
+
+                    # For scheduled times, increment to next day if in the past
+                    while target_time < now:
+                        target_time = target_time + timedelta(days=1)
+
+                # Calculate waiting time
+                time_diff = target_time - now
+                total_minutes = int(time_diff.total_seconds() / 60)
+                days = total_minutes // (24 * 60)
+                remaining_minutes = total_minutes % (24 * 60)
+                hours = remaining_minutes // 60
+                mins = remaining_minutes % 60
+
+                if days > 0:
+                    return f"{days} days {hours:02d}:{mins:02d}"
+                else:
+                    return f"{hours:02d}:{mins:02d}"
 
             elif self.entity_description.key == "delay":
+                realtime = device_data.get("realtime", {})
                 if realtime and realtime.get("realtime_time"):
                     real_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
                     sched_time = datetime.fromisoformat(realtime["dienstregelingTijdstip"].replace('Z', '+00:00'))
@@ -182,14 +165,12 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             return None
 
         try:
-            # Get device identifier
             device_id = f"{self._device[CONF_HALTE_NUMBER]}_{self._device[CONF_LINE_NUMBER]}"
             device_data = self.coordinator.data.get(device_id, {})
 
             if not device_data:
                 return None
 
-            # Get newest schedule entry
             schedule = next(iter(device_data.get("schedule", [])), None)
             if not schedule:
                 return None
@@ -199,53 +180,60 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                 "scheduled_date": schedule.get("date", "Unknown"),
                 "destination": schedule["bestemming"],
                 "rit_number": schedule["ritnummer"],
-                "line_description": schedule.get("line_description"),
-                "vehicle_type": schedule.get("vehicle_type"),
-                "public_line": schedule.get("public_line"),
+                "line_description": self._device.get("line_description"),
+                "vehicle_type": self._device.get("vehicle_type"),
+                "public_line": self._device.get("public_line"),
             }
-
-            # Add formatted waiting time
-            waiting_time = schedule.get("waiting_time")
-            if waiting_time is not None and self.entity_description.key == "waiting_time":
-                total_minutes = int(waiting_time)
-                days = total_minutes // (24 * 60)
-                remaining_minutes = total_minutes % (24 * 60)
-                hours = remaining_minutes // 60
-                mins = remaining_minutes % 60
-                attributes["time_formatted"] = f"{days}.{hours:02d}:{mins:02d}"
 
             realtime = device_data.get("realtime", {})
             if realtime:
                 if realtime.get("realtime_time"):
                     attributes["realtime_time"] = realtime["realtime_time"]
+                    attributes["prediction_status"] = realtime.get("prediction_status")
+                    attributes["vehicle_number"] = realtime.get("vehicle_number")
+                    attributes["direction"] = realtime.get("direction")
+
                     delay = realtime.get("delay_minutes", 0)
                     attributes["delay_minutes"] = delay
 
-                    # Add status based on delay
-                    if delay <= -1:  # Early
+                    if delay <= -1:
                         attributes["status"] = "early"
                         attributes["status_detail"] = f"{abs(delay)} minutes early"
-                    elif delay <= 1:  # On time (-1 to +1 minute)
+                    elif delay <= 1:
                         attributes["status"] = "on_time"
                         attributes["status_detail"] = "On time"
-                    elif delay <= 5:  # Slightly delayed
+                    elif delay <= 5:
                         attributes["status"] = "slightly_delayed"
                         attributes["status_detail"] = f"{delay} minutes delayed"
-                    else:  # Significantly delayed
+                    else:
                         attributes["status"] = "delayed"
                         attributes["status_detail"] = f"{delay} minutes delayed"
-
-                if realtime.get("prediction_status"):
-                    attributes["prediction_status"] = realtime["prediction_status"]
-
-                if realtime.get("vehicle_number"):
-                    attributes["vehicle_number"] = realtime["vehicle_number"]
-
-                if realtime.get("direction"):
-                    attributes["direction"] = realtime["direction"]
 
             return attributes
 
         except Exception as err:
             _LOGGER.error("Error getting attributes: %s", err)
             return None
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up De Lijn sensors based on a config entry."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    devices = entry.data.get("devices", [])
+
+    entities = []
+    for device in devices:
+        for description in SENSOR_TYPES:
+            entities.append(
+                DeLijnSensor(
+                    coordinator=coordinator,
+                    entry=entry,
+                    device=device,
+                    description=description,
+                )
+            )
+
+    async_add_entities(entities, True)

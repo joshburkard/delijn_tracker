@@ -61,7 +61,8 @@ class DeLijnApi:
         self,
         halte_number: str,
         line_number: str,
-        target_time: str = None
+        target_time: str = None,
+        entity_number: str = None
     ) -> list[dict[str, Any]]:
         """Get scheduled times for a specific line at a halte."""
         try:
@@ -70,8 +71,10 @@ class DeLijnApi:
                 halte_number, line_number, target_time
             )
 
-            # Get correct entity for this halte
-            entity_number = await self._get_entity_for_halte(halte_number)
+            # Get entity if not provided
+            if not entity_number:
+                entity_number = await self._get_entity_for_halte(halte_number)
+
             if not entity_number:
                 _LOGGER.error("Could not find entity for halte %s", halte_number)
                 return []
@@ -102,7 +105,6 @@ class DeLijnApi:
                         )
                         time_str = departure_time.strftime("%H:%M")
 
-                        # If we're looking for a specific time, only include matching times
                         if target_time and time_str != target_time:
                             continue
 
@@ -111,7 +113,8 @@ class DeLijnApi:
                             "timestamp": doorkomst["dienstregelingTijdstip"],
                             "bestemming": doorkomst.get("bestemming", "Unknown"),
                             "ritnummer": doorkomst["ritnummer"],
-                            "date": departure_time.strftime("%Y-%m-%d")
+                            "date": departure_time.strftime("%Y-%m-%d"),
+                            "entity_number": entity_number
                         })
 
             _LOGGER.debug(
@@ -121,7 +124,7 @@ class DeLijnApi:
             return sorted(schedule_times, key=lambda x: x["time"])
 
         except Exception as err:
-            _LOGGER.error("Error fetching schedule data: %s", err, exc_info=True)
+            _LOGGER.error("Error fetching schedule data: %s", err)
             return []
 
     async def get_realtime_data(
@@ -248,11 +251,16 @@ class DeLijnApi:
 
             # Find the halte in any entity
             halte = None
+            entity_number = None
             for entity in entities["entiteiten"]:
                 try:
-                    halte_response = await self._make_request(f"haltes/{entity['entiteitnummer']}/{halte_number}")
+                    halte_response = await self._make_request(
+                        f"haltes/{entity['entiteitnummer']}/{halte_number}"
+                    )
                     if halte_response:
                         halte = halte_response
+                        entity_number = entity['entiteitnummer']
+                        _LOGGER.debug("Found halte in entity %s", entity_number)
                         break
                 except Exception:
                     continue
@@ -271,25 +279,34 @@ class DeLijnApi:
                 return []
 
             lijnrichtingen_data = await self._make_request_with_url(lijnrichtingen_link)
-            _LOGGER.debug("Got lijnrichtingen data: %s", lijnrichtingen_data)
+            _LOGGER.debug("Got lijnrichtingen data for halte %s", halte_number)
 
-            # Process each line
             lines = []
             for lr in lijnrichtingen_data.get("lijnrichtingen", []):
                 try:
                     line_data = await self._make_request(
-                        f"lijnen/1/{lr['lijnnummer']}/lijnrichtingen/HEEN"
+                        f"lijnen/{entity_number}/{lr['lijnnummer']}/lijnrichtingen/HEEN"
                     )
                     if line_data:
                         lines.append({
                             "lijnnummer": lr["lijnnummer"],
                             "omschrijving": line_data.get("omschrijving", ""),
                             "bestemming": line_data.get("bestemming", "Unknown"),
+                            "entity_number": entity_number
                         })
+                        _LOGGER.debug(
+                            "Added line %s for entity %s",
+                            lr["lijnnummer"],
+                            entity_number
+                        )
                 except Exception as e:
-                    _LOGGER.warning("Error getting line details for %s: %s", lr.get("lijnnummer"), e)
+                    _LOGGER.debug(
+                        "Error getting details for line %s: %s",
+                        lr.get("lijnnummer"),
+                        str(e)
+                    )
 
-            return lines
+            return sorted(lines, key=lambda x: int(x["lijnnummer"]))
 
         except Exception as err:
             _LOGGER.error("Error getting available lines: %s", err)

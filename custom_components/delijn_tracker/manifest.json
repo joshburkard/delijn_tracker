@@ -3,8 +3,9 @@
     "name": "De Lijn Tracker",
     "config_flow": true,
     "documentation": "https://github.com/yourusername/ha-delijn",
+    "issue_tracker": "https://github.com/yourusername/ha-delijn/issues",
     "iot_class": "cloud_polling",
-    "version": "2025.01.09.004",
+    "version": "2025.01.09.005",
     "requirements": [],
     "dependencies": [],
     "codeowners": ["@yourusername"]
