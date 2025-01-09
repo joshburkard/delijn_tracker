@@ -75,7 +75,7 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
         api: DeLijnApi,
         entry: ConfigEntry,
     ) -> None:
-        """Initialize the coordinator."""
+        """Initialize coordinator."""
         super().__init__(
             hass,
             _LOGGER,
@@ -84,43 +84,37 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
         )
         self.api = api
         self.entry = entry
-        self.last_data = {}
-        _LOGGER.debug("Initialized coordinator with entry: %s", entry.entry_id)
+        self.devices = entry.data.get("devices", [])
 
     async def _async_update_data(self):
-        """Fetch data from De Lijn."""
+        """Update data via API."""
         try:
             async with async_timeout.timeout(30):
                 data = {}
-                success_count = 0
-                error_count = 0
 
-                devices = self.entry.data.get("devices", [])
-                _LOGGER.debug("Starting update for %d devices", len(devices))
-
-                for device in devices:
+                for device in self.devices:
                     try:
                         halte = device[CONF_HALTE_NUMBER]
                         line = device[CONF_LINE_NUMBER]
-                        device_id = f"{halte}_{line}"
                         target_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
+                        entity_number = device.get("entity_number")
 
-                        _LOGGER.debug(
-                            "Fetching data for halte: %s, line: %s, time: %s",
+                        # Create unique device identifier including the time
+                        device_id = f"{halte}_{line}_{target_time}"
+
+                        _LOGGER.info(
+                            "Fetching data for halte %s, line %s, time %s",
                             halte, line, target_time
                         )
 
                         schedule_times = await self.api.get_schedule_times(
                             halte,
                             line,
-                            target_time=target_time
+                            target_time=target_time,
+                            entity_number=entity_number
                         )
 
                         if schedule_times:
-                            _LOGGER.debug(
-                                "Found %d schedule times for device %s",
-                                len(schedule_times), device_id
-                            )
                             realtime_data = await self.api.get_realtime_data(
                                 halte,
                                 line,
@@ -130,54 +124,25 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                             data[device_id] = {
                                 "schedule": schedule_times,
                                 "realtime": realtime_data,
+                                "device_info": device
                             }
-                            success_count += 1
+                            _LOGGER.debug("Updated data for device %s", device_id)
                         else:
-                            _LOGGER.warning(
-                                "No schedule times found for halte %s, line %s",
-                                halte, line
+                            _LOGGER.info(
+                                "No schedule times found for halte %s, line %s, time %s",
+                                halte, line, target_time
                             )
-                            if device_id in self.last_data:
-                                data[device_id] = self.last_data[device_id]
-                                _LOGGER.debug(
-                                    "Using cached data for device %s",
-                                    device_id
-                                )
-                            error_count += 1
 
                     except Exception as err:
                         _LOGGER.error(
                             "Error updating device %s: %s",
-                            device_id, err,
-                            exc_info=True
+                            device_id,
+                            str(err)
                         )
-                        if device_id in self.last_data:
-                            data[device_id] = self.last_data[device_id]
-                            _LOGGER.debug(
-                                "Using cached data for device %s after error",
-                                device_id
-                            )
-                        error_count += 1
                         continue
 
-                _LOGGER.debug(
-                    "Update completed - Success: %d, Errors: %d, Total devices: %d",
-                    success_count, error_count, len(devices)
-                )
-
-                if data:
-                    self.last_data = data
-                    return data
-                elif self.last_data:
-                    _LOGGER.warning("No new data received, using cached data")
-                    return self.last_data
-                else:
-                    _LOGGER.error("No data available and no cache available")
-                    return {}
+                return data
 
         except Exception as err:
-            _LOGGER.error("Error fetching data: %s", err, exc_info=True)
-            if self.last_data:
-                _LOGGER.warning("Using cached data due to update error")
-                return self.last_data
+            _LOGGER.error("Error fetching data: %s", err)
             raise UpdateFailed(f"Error communicating with API: {err}")

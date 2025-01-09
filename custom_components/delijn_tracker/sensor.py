@@ -38,6 +38,12 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
         icon="mdi:clock-alert",
         native_unit_of_measurement="min",
     ),
+    SensorEntityDescription(
+        key="latest_delay",
+        name="Latest Known Delay",
+        icon="mdi:clock-check",
+        native_unit_of_measurement="min",
+    ),
 )
 
 class DeLijnSensor(CoordinatorEntity, SensorEntity):
@@ -68,13 +74,15 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
 
         # Get the line number
         line_number = device.get("public_line") or device[CONF_LINE_NUMBER]
+        public_line = device.get("public_line") or device[CONF_LINE_NUMBER]
         scheduled_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
         vehicle_type = device.get("vehicle_type", "Bus").upper()
+        halte_name = device.get("halte_name", "")
 
         # Create device name
         device_name = (
-            f"Halte {device[CONF_HALTE_NUMBER]} - "
-            f"{vehicle_type} {line_number} - "
+            f"{halte_name} ({device[CONF_HALTE_NUMBER]}) - "
+            f"{vehicle_type} {public_line} - "
             f"{device[CONF_DESTINATION]} - "
             f"{scheduled_time}"
         )
@@ -96,13 +104,17 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             return None
 
         try:
-            device_id = f"{self._device[CONF_HALTE_NUMBER]}_{self._device[CONF_LINE_NUMBER]}"
-            device_data = self.coordinator.data.get(device_id, {})
+            scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
+            device_id = (
+                f"{self._device[CONF_HALTE_NUMBER]}_"
+                f"{self._device[CONF_LINE_NUMBER]}_"
+                f"{scheduled_time}"
+            )
 
+            device_data = self.coordinator.data.get(device_id, {})
             if not device_data:
                 return None
 
-            scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
             schedule = next(
                 (time for time in device_data.get("schedule", [])
                  if time["time"] == scheduled_time),
@@ -116,23 +128,19 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                 now = datetime.now()
                 realtime = device_data.get("realtime", {})
 
-                # Check for realtime data
                 if realtime and realtime.get("realtime_time"):
-                    # Use realtime prediction
-                    target_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
-
-                    # If the realtime prediction is in the past, show "00:00"
+                    target_time = datetime.fromisoformat(
+                        realtime["realtime_time"].replace('Z', '+00:00')
+                    )
                     if target_time < now:
                         return "00:00"
                 else:
-                    # Use scheduled time
-                    target_time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
-
-                    # For scheduled times, increment to next day if in the past
+                    target_time = datetime.fromisoformat(
+                        schedule["timestamp"].replace('Z', '+00:00')
+                    )
                     while target_time < now:
                         target_time = target_time + timedelta(days=1)
 
-                # Calculate waiting time
                 time_diff = target_time - now
                 total_minutes = int(time_diff.total_seconds() / 60)
                 days = total_minutes // (24 * 60)
@@ -148,8 +156,12 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             elif self.entity_description.key == "delay":
                 realtime = device_data.get("realtime", {})
                 if realtime and realtime.get("realtime_time"):
-                    real_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
-                    sched_time = datetime.fromisoformat(realtime["dienstregelingTijdstip"].replace('Z', '+00:00'))
+                    real_time = datetime.fromisoformat(
+                        realtime["realtime_time"].replace('Z', '+00:00')
+                    )
+                    sched_time = datetime.fromisoformat(
+                        realtime["dienstregelingTijdstip"].replace('Z', '+00:00')
+                    )
                     return round((real_time - sched_time).total_seconds() / 60)
 
             return None

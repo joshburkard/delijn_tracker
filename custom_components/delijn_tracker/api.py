@@ -246,12 +246,12 @@ class DeLijnApi:
     async def get_available_lines(self, halte_number: str) -> list[dict[str, Any]]:
         """Get available lines for a halte."""
         try:
-            # Get entities first
             entities = await self._make_request("entiteiten")
-
-            # Find the halte in any entity
+            lines = []
             halte = None
             entity_number = None
+            halte_name = None
+
             for entity in entities["entiteiten"]:
                 try:
                     halte_response = await self._make_request(
@@ -260,6 +260,7 @@ class DeLijnApi:
                     if halte_response:
                         halte = halte_response
                         entity_number = entity['entiteitnummer']
+                        halte_name = halte_response.get("omschrijvingLang", "")
                         _LOGGER.debug("Found halte in entity %s", entity_number)
                         break
                 except Exception:
@@ -269,7 +270,6 @@ class DeLijnApi:
                 _LOGGER.error("Halte %s not found", halte_number)
                 return []
 
-            # Get lijnrichtingen
             lijnrichtingen_link = next(
                 (link["url"] for link in halte["links"] if link["rel"] == "lijnrichtingen"),
                 None
@@ -279,35 +279,42 @@ class DeLijnApi:
                 return []
 
             lijnrichtingen_data = await self._make_request_with_url(lijnrichtingen_link)
-            _LOGGER.debug("Got lijnrichtingen data for halte %s", halte_number)
 
-            lines = []
             for lr in lijnrichtingen_data.get("lijnrichtingen", []):
                 try:
-                    line_data = await self._make_request(
-                        f"lijnen/{entity_number}/{lr['lijnnummer']}/lijnrichtingen/HEEN"
-                    )
+                    line_data = None
+                    for entity in entities["entiteiten"]:
+                        try:
+                            entity_line_data = await self._make_request(
+                                f"lijnen/{entity['entiteitnummer']}/{lr['lijnnummer']}"
+                            )
+                            if entity_line_data:
+                                if isinstance(entity_line_data, list):
+                                    line_data = next((line for line in entity_line_data if line.get("publiek")), None)
+                                else:
+                                    line_data = entity_line_data
+                                break
+                        except Exception:
+                            continue
+
                     if line_data:
                         lines.append({
                             "lijnnummer": lr["lijnnummer"],
+                            "lijnnummerPubliek": line_data.get("lijnnummerPubliek", lr["lijnnummer"]),
                             "omschrijving": line_data.get("omschrijving", ""),
                             "bestemming": line_data.get("bestemming", "Unknown"),
-                            "entity_number": entity_number
+                            "entity_number": entity_number,
+                            "halte_name": halte_name
                         })
-                        _LOGGER.debug(
-                            "Added line %s for entity %s",
-                            lr["lijnnummer"],
-                            entity_number
-                        )
+
                 except Exception as e:
-                    _LOGGER.debug(
-                        "Error getting details for line %s: %s",
+                    _LOGGER.info(
+                        "Error getting line details for %s: %s",
                         lr.get("lijnnummer"),
                         str(e)
                     )
 
             return sorted(lines, key=lambda x: int(x["lijnnummer"]))
-
         except Exception as err:
             _LOGGER.error("Error getting available lines: %s", err)
             raise

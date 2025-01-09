@@ -10,6 +10,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DeLijnApi
@@ -160,68 +161,70 @@ class DeLijnTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle time selection."""
         if user_input is not None:
-            scheduled_time = user_input[CONF_SCHEDULED_TIME]
-            time, ritnummer = scheduled_time.split("_")
+            try:
+                scheduled_time = user_input[CONF_SCHEDULED_TIME]
+                time, ritnummer = scheduled_time.split("_")
 
-            selected_time = next(
-                t for t in self._available_times
-                if t["time"] == time and str(t["ritnummer"]) == ritnummer
-            )
-
-            device_unique_id = f"{self._halte_number}_{self._line_number}_{time}"
-            device_data = {
-                CONF_HALTE_NUMBER: self._halte_number,
-                CONF_LINE_NUMBER: self._line_number,
-                CONF_SCHEDULED_TIME: selected_time["timestamp"],
-                CONF_DESTINATION: selected_time["bestemming"],
-                "public_line": self._line_number,
-                "vehicle_type": "Bus",
-                "line_description": f"Line {self._line_number}",
-                "entity_number": self._entity_number,
-                "unique_id": device_unique_id
-            }
-
-            if self._existing_entry:
-                new_data = dict(self._existing_entry.data)
-                devices = list(new_data.get("devices", []))
-
-                # Check if device already exists
-                device_exists = any(
-                    dev.get("unique_id") == device_unique_id
-                    for dev in devices
+                selected_time = next(
+                    t for t in self._available_times
+                    if t["time"] == time and str(t["ritnummer"]) == ritnummer
                 )
 
-                if device_exists:
-                    return self.async_abort(reason="already_configured")
-
-                # Add new device
-                devices.append(device_data)
-                new_data["devices"] = devices
-
-                self.hass.config_entries.async_update_entry(
-                    self._existing_entry,
-                    data=new_data
+                selected_line = next(
+                    line for line in self._available_lines
+                    if str(line["lijnnummer"]) == self._line_number
                 )
-                return self.async_abort(reason="device_added")
 
-            return self.async_create_entry(
-                title="De Lijn Tracker",
-                data={
-                    CONF_API_KEY: self._api_key,
-                    "devices": [device_data]
+                device_unique_id = f"{self._halte_number}_{self._line_number}_{time}"
+                device_data = {
+                    CONF_HALTE_NUMBER: self._halte_number,
+                    CONF_LINE_NUMBER: self._line_number,
+                    CONF_SCHEDULED_TIME: selected_time["timestamp"],
+                    CONF_DESTINATION: selected_time["bestemming"],
+                    "public_line": selected_line.get("lijnnummerPubliek", self._line_number),
+                    "vehicle_type": "Bus",
+                    "line_description": selected_line.get("omschrijving", f"Line {self._line_number}"),
+                    "entity_number": selected_line.get("entity_number"),
+                    "halte_name": selected_line.get("halte_name", ""),
+                    "unique_id": device_unique_id
                 }
-            )
+
+                if self._existing_entry:
+                    new_data = dict(self._existing_entry.data)
+                    devices = list(new_data.get("devices", []))
+                    devices.append(device_data)
+                    new_data["devices"] = devices
+
+                    self.hass.config_entries.async_update_entry(
+                        self._existing_entry,
+                        data=new_data
+                    )
+                    return self.async_abort(reason="device_added")
+
+                return self.async_create_entry(
+                    title=f"{selected_line.get('halte_name', '')} - Line {selected_line.get('lijnnummerPubliek', self._line_number)}",
+                    data={
+                        CONF_API_KEY: self._api_key,
+                        "devices": [device_data]
+                    }
+                )
+
+            except Exception as err:
+                _LOGGER.info("Error in time selection: %s", err)
+                return self.async_abort(reason="time_error")
 
         time_options = {
-            f"{time['time']}_{time['ritnummer']}": f"{time['time']} - {time['bestemming']}"
-            for time in self._available_times
+            f"{time['time']}_{time['ritnummer']}": (
+                f"{time['time']} - {time['bestemming']}"
+            )
+            for time in self._available_times or []
         }
 
         return self.async_show_form(
             step_id="select_time",
             data_schema=vol.Schema({
                 vol.Required(CONF_SCHEDULED_TIME): vol.In(time_options)
-            }),
+            })
         )
 
     @staticmethod
@@ -231,7 +234,6 @@ class DeLijnTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.OptionsFlow:
         """Create the options flow."""
         return OptionsFlowHandler(config_entry)
-
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle De Lijn Tracker options."""
@@ -243,11 +245,82 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage the options."""
+        """Handle options flow."""
+        errors = {}
+
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            try:
+                if user_input["remove_device"] != "none":
+                    data = dict(self.config_entry.data)
+                    devices = list(data.get("devices", []))
+
+                    # Find device to remove
+                    device_to_remove = next(
+                        (dev for dev in devices
+                        if dev.get("unique_id") == user_input["remove_device"]),
+                        None
+                    )
+
+                    if device_to_remove:
+                        _LOGGER.info(
+                            "Removing device: Halte %s Line %s Time %s",
+                            device_to_remove[CONF_HALTE_NUMBER],
+                            device_to_remove[CONF_LINE_NUMBER],
+                            device_to_remove[CONF_SCHEDULED_TIME].split("T")[1][:5]
+                        )
+
+                        # Remove from device registry
+                        device_registry = dr.async_get(self.hass)
+                        unique_id = f"{self.config_entry.entry_id}_{device_to_remove['unique_id']}"
+                        device = device_registry.async_get_device({(DOMAIN, unique_id)})
+
+                        if device:
+                            device_registry.async_remove_device(device.id)
+                            _LOGGER.info("Device removed from registry")
+
+                        # Update configuration
+                        devices = [dev for dev in devices if dev.get("unique_id") != user_input["remove_device"]]
+                        data["devices"] = devices
+
+                        self.hass.config_entries.async_update_entry(
+                            self.config_entry,
+                            data=data
+                        )
+
+                        await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                        return self.async_create_entry(title="", data={})
+
+                    errors["base"] = "device_not_found"
+                    _LOGGER.info("Selected device not found in configuration")
+
+            except Exception as err:
+                _LOGGER.exception("Error removing device: %s", err)
+                errors["base"] = "unknown"
+
+        # Create list of devices
+        devices = self.config_entry.data.get("devices", [])
+        device_options = {
+            "none": "Don't remove any device"
+        }
+
+        for device in devices:
+            halte = device[CONF_HALTE_NUMBER]
+            line = device[CONF_LINE_NUMBER]
+            time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
+            destination = device[CONF_DESTINATION]
+            unique_id = device.get("unique_id", f"{halte}_{line}_{time}")
+
+            device_options[unique_id] = (
+                f"Halte {halte} - Line {line} - {destination} - {time}"
+            )
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema({
+                vol.Required(
+                    "remove_device",
+                    default="none"
+                ): vol.In(device_options)
+            }),
+            errors=errors
         )

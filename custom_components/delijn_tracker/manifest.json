@@ -5,7 +5,7 @@
     "documentation": "https://github.com/yourusername/ha-delijn",
     "issue_tracker": "https://github.com/yourusername/ha-delijn/issues",
     "iot_class": "cloud_polling",
-    "version": "2025.01.09.005",
+    "version": "2025.01.09.006",
     "requirements": [],
     "dependencies": [],
     "codeowners": ["@yourusername"]

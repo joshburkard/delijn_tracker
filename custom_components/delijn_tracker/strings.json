@@ -1,0 +1,14 @@
+{
+    "config": {
+        "error": {
+            "device_not_found": "Selected device not found in configuration",
+            "unknown": "Unexpected error occurred",
+            "remove_failed": "Failed to remove device. Please check the logs for more information."
+        },
+        "abort": {
+            "device_added": "Device successfully added",
+            "device_exists": "Device already exists",
+            "time_error": "Error processing selected time. Please try again."
+        }
+    }
+}
