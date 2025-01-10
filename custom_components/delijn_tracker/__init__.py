@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import async_timeout
 
@@ -85,12 +85,16 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
         self.api = api
         self.entry = entry
         self.devices = entry.data.get("devices", [])
+        self._latest_delays = {}  # Store latest delays per device
+        self._last_update_time = {}  # Store when the delay was last updated
 
     async def _async_update_data(self):
         """Update data via API."""
         try:
             async with async_timeout.timeout(30):
                 data = {}
+                now = datetime.now()
+                today = now.date()
 
                 for device in self.devices:
                     try:
@@ -98,14 +102,7 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                         line = device[CONF_LINE_NUMBER]
                         target_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
                         entity_number = device.get("entity_number")
-
-                        # Create unique device identifier including the time
                         device_id = f"{halte}_{line}_{target_time}"
-
-                        _LOGGER.info(
-                            "Fetching data for halte %s, line %s, time %s",
-                            halte, line, target_time
-                        )
 
                         schedule_times = await self.api.get_schedule_times(
                             halte,
@@ -121,24 +118,52 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                                 device[CONF_SCHEDULED_TIME]
                             )
 
+                            # Process realtime data for latest delay
+                            if realtime_data and "halteDoorkomsten" in realtime_data:
+                                latest_delay = None
+                                latest_time = None
+
+                                for doorkomst in realtime_data["halteDoorkomsten"]:
+                                    for passage in doorkomst.get("doorkomsten", []):
+                                        if (str(passage.get("lijnnummer")) == line and
+                                            passage.get("real-timeTijdstip") and
+                                            passage.get("dienstregelingTijdstip")):
+
+                                            real_time = datetime.fromisoformat(
+                                                passage["real-timeTijdstip"].replace('Z', '+00:00')
+                                            )
+                                            sched_time = datetime.fromisoformat(
+                                                passage["dienstregelingTijdstip"].replace('Z', '+00:00')
+                                            )
+
+                                            if real_time.date() == today:
+                                                if latest_time is None or real_time > latest_time:
+                                                    delay = round((real_time - sched_time).total_seconds() / 60)
+                                                    latest_delay = delay
+                                                    latest_time = real_time
+
+                                if latest_delay is not None:
+                                    self._latest_delays[device_id] = latest_delay
+                                    self._last_update_time[device_id] = now
+
                             data[device_id] = {
                                 "schedule": schedule_times,
                                 "realtime": realtime_data,
-                                "device_info": device
+                                "device_info": device,
+                                "latest_delay": self._latest_delays.get(device_id, 0),
+                                "last_delay_update": self._last_update_time.get(device_id)
                             }
-                            _LOGGER.debug("Updated data for device %s", device_id)
-                        else:
-                            _LOGGER.info(
-                                "No schedule times found for halte %s, line %s, time %s",
-                                halte, line, target_time
-                            )
 
                     except Exception as err:
-                        _LOGGER.error(
-                            "Error updating device %s: %s",
-                            device_id,
-                            str(err)
-                        )
+                        _LOGGER.error("Error updating device %s: %s", device_id, str(err))
+                        # Still add stored delay data even if update fails
+                        data[device_id] = {
+                            "schedule": [],
+                            "realtime": {},
+                            "device_info": device,
+                            "latest_delay": self._latest_delays.get(device_id, 0),
+                            "last_delay_update": self._last_update_time.get(device_id)
+                        }
                         continue
 
                 return data

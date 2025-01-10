@@ -1,6 +1,7 @@
 
 | Version | Description |
 | --- | --- |
+| 2025.01.10.00009 | adjusted 'last known delay' sensor |
 | 2025.01.10.00008 | added 'expected time' sensor |
 | 2025.01.09.007 | adjusted manifest |
 | 2025.01.09.006 | changed device name to represent station name |

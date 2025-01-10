@@ -168,24 +168,15 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                 return 0
 
             elif self.entity_description.key == "latest_delay":
-                now = datetime.now()
-                today = now.date()
-                realtime = device_data.get("realtime", {})
-                latest_delay = 0
+                scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
+                device_id = (
+                    f"{self._device[CONF_HALTE_NUMBER]}_"
+                    f"{self._device[CONF_LINE_NUMBER]}_"
+                    f"{scheduled_time}"
+                )
+                device_data = self.coordinator.data.get(device_id, {})
 
-                if realtime and "halteDoorkomsten" in realtime:
-                    for doorkomst in realtime["halteDoorkomsten"]:
-                        for passage in doorkomst.get("doorkomsten", []):
-                            if (str(passage.get("lijnnummer")) == self._device[CONF_LINE_NUMBER] and
-                                passage.get("real-timeTijdstip") and
-                                passage.get("dienstregelingTijdstip")):
-
-                                real_time = datetime.fromisoformat(passage["real-timeTijdstip"].replace('Z', '+00:00'))
-                                sched_time = datetime.fromisoformat(passage["dienstregelingTijdstip"].replace('Z', '+00:00'))
-
-                                if real_time.date() == today:
-                                    delay = round((real_time - sched_time).total_seconds() / 60)
-                                    latest_delay = max(latest_delay, delay)
+                return device_data.get("latest_delay", 0)
 
                 return latest_delay
 
@@ -215,25 +206,26 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             return None
 
         try:
-            device_id = f"{self._device[CONF_HALTE_NUMBER]}_{self._device[CONF_LINE_NUMBER]}"
+            scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
+            device_id = (
+                f"{self._device[CONF_HALTE_NUMBER]}_"
+                f"{self._device[CONF_LINE_NUMBER]}_"
+                f"{scheduled_time}"
+            )
             device_data = self.coordinator.data.get(device_id, {})
 
-            if not device_data:
-                return None
-
-            schedule = next(iter(device_data.get("schedule", [])), None)
-            if not schedule:
-                return None
-
             attributes = {
-                "scheduled_time": schedule["time"],
-                "scheduled_date": schedule.get("date", "Unknown"),
-                "destination": schedule["bestemming"],
-                "rit_number": schedule["ritnummer"],
+                "scheduled_time": scheduled_time,
+                "destination": self._device[CONF_DESTINATION],
                 "line_description": self._device.get("line_description"),
                 "vehicle_type": self._device.get("vehicle_type"),
                 "public_line": self._device.get("public_line"),
             }
+
+            if self.entity_description.key == "latest_delay":
+                last_update = device_data.get("last_delay_update")
+                if last_update:
+                    attributes["last_delay_update"] = last_update.isoformat()
 
             realtime = device_data.get("realtime", {})
             if realtime:
@@ -242,22 +234,6 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                     attributes["prediction_status"] = realtime.get("prediction_status")
                     attributes["vehicle_number"] = realtime.get("vehicle_number")
                     attributes["direction"] = realtime.get("direction")
-
-                    delay = realtime.get("delay_minutes", 0)
-                    attributes["delay_minutes"] = delay
-
-                    if delay <= -1:
-                        attributes["status"] = "early"
-                        attributes["status_detail"] = f"{abs(delay)} minutes early"
-                    elif delay <= 1:
-                        attributes["status"] = "on_time"
-                        attributes["status_detail"] = "On time"
-                    elif delay <= 5:
-                        attributes["status"] = "slightly_delayed"
-                        attributes["status_detail"] = f"{delay} minutes delayed"
-                    else:
-                        attributes["status"] = "delayed"
-                        attributes["status_detail"] = f"{delay} minutes delayed"
 
             return attributes
 
