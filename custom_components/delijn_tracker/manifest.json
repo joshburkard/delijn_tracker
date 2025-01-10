@@ -5,7 +5,7 @@
     "documentation": "https://github.com/joshburkard/delijn_tracker",
     "issue_tracker": "https://github.com/joshburkard/delijn_tracker/issues",
     "iot_class": "cloud_polling",
-    "version": "2025.01.09.007",
+    "version": "2025.01.10.00008",
     "requirements": [],
     "dependencies": [],
     "codeowners": ["@joshburkard"]

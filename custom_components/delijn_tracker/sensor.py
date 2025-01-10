@@ -44,6 +44,12 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
         icon="mdi:clock-check",
         native_unit_of_measurement="min",
     ),
+    SensorEntityDescription(
+        key="expected_time",
+        name="Expected Time",
+        icon="mdi:clock-outline",
+        native_unit_of_measurement=None,
+    ),
 )
 
 class DeLijnSensor(CoordinatorEntity, SensorEntity):
@@ -156,14 +162,46 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             elif self.entity_description.key == "delay":
                 realtime = device_data.get("realtime", {})
                 if realtime and realtime.get("realtime_time"):
-                    real_time = datetime.fromisoformat(
-                        realtime["realtime_time"].replace('Z', '+00:00')
-                    )
-                    sched_time = datetime.fromisoformat(
-                        realtime["dienstregelingTijdstip"].replace('Z', '+00:00')
-                    )
+                    real_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
+                    sched_time = datetime.fromisoformat(realtime["dienstregelingTijdstip"].replace('Z', '+00:00'))
                     return round((real_time - sched_time).total_seconds() / 60)
+                return 0
 
+            elif self.entity_description.key == "latest_delay":
+                now = datetime.now()
+                today = now.date()
+                realtime = device_data.get("realtime", {})
+                latest_delay = 0
+
+                if realtime and "halteDoorkomsten" in realtime:
+                    for doorkomst in realtime["halteDoorkomsten"]:
+                        for passage in doorkomst.get("doorkomsten", []):
+                            if (str(passage.get("lijnnummer")) == self._device[CONF_LINE_NUMBER] and
+                                passage.get("real-timeTijdstip") and
+                                passage.get("dienstregelingTijdstip")):
+
+                                real_time = datetime.fromisoformat(passage["real-timeTijdstip"].replace('Z', '+00:00'))
+                                sched_time = datetime.fromisoformat(passage["dienstregelingTijdstip"].replace('Z', '+00:00'))
+
+                                if real_time.date() == today:
+                                    delay = round((real_time - sched_time).total_seconds() / 60)
+                                    latest_delay = max(latest_delay, delay)
+
+                return latest_delay
+
+            elif self.entity_description.key == "expected_time":
+                realtime = device_data.get("realtime", {})
+
+                if realtime and realtime.get("real-timeTijdstip"):
+                    # Use realtime prediction if available
+                    time = datetime.fromisoformat(realtime["real-timeTijdstip"].replace('Z', '+00:00'))
+                    return time.strftime("%H:%M")
+                elif schedule and schedule.get("timestamp"):
+                    # Fall back to scheduled time
+                    time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
+                    return time.strftime("%H:%M")
+
+                return None
             return None
 
         except Exception as err:
