@@ -202,7 +202,7 @@ class DeLijnTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="device_added")
 
                 return self.async_create_entry(
-                    title=f"{selected_line.get('halte_name', '')} - Line {selected_line.get('lijnnummerPubliek', self._line_number)}",
+                    title="De Lijn Tracker",
                     data={
                         CONF_API_KEY: self._api_key,
                         "devices": [device_data]

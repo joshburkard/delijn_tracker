@@ -1,6 +1,7 @@
 
 | Version | Description |
 | --- | --- |
+| 2025.01.13.00012 | adjusted integration title |
 | 2025.01.13.00011 | adjusted 'last known delay' sensor |
 | 2025.01.13.00010 | adjusted 'delay' sensor |
 | 2025.01.10.00009 | adjusted 'last known delay' sensor |
