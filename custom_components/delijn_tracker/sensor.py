@@ -161,10 +161,19 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
 
             elif self.entity_description.key == "delay":
                 realtime = device_data.get("realtime", {})
-                if realtime and realtime.get("realtime_time"):
+
+                if realtime and realtime.get("realtime_time") and realtime.get("dienstregelingTijdstip"):
                     real_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
                     sched_time = datetime.fromisoformat(realtime["dienstregelingTijdstip"].replace('Z', '+00:00'))
-                    return round((real_time - sched_time).total_seconds() / 60)
+                    delay = round((real_time - sched_time).total_seconds() / 60)
+                    if delay != 0:
+                        _LOGGER.info(
+                            "Found delay of %d minutes for line %s",
+                            delay,
+                            self._device[CONF_LINE_NUMBER]
+                        )
+                    return delay
+
                 return 0
 
             elif self.entity_description.key == "latest_delay":
