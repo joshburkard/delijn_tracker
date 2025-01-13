@@ -111,6 +111,9 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                             entity_number=entity_number
                         )
 
+                        latest_real_time = None
+                        latest_delay = None
+
                         if schedule_times:
                             realtime_data = await self.api.get_realtime_data(
                                 halte,
@@ -118,45 +121,39 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                                 device[CONF_SCHEDULED_TIME]
                             )
 
-                            # Process realtime data for latest delay
-                            if realtime_data and "halteDoorkomsten" in realtime_data:
-                                latest_delay = None
-                                latest_time = None
+                            # Check for realtime data
+                            if realtime_data and realtime_data.get("realtime_time") and realtime_data.get("dienstregelingTijdstip"):
+                                real_time = datetime.fromisoformat(realtime_data["realtime_time"].replace('Z', '+00:00'))
 
-                                for doorkomst in realtime_data["halteDoorkomsten"]:
-                                    for passage in doorkomst.get("doorkomsten", []):
-                                        if (str(passage.get("lijnnummer")) == line and
-                                            passage.get("real-timeTijdstip") and
-                                            passage.get("dienstregelingTijdstip")):
+                                if real_time.date() == today:
+                                    sched_time = datetime.fromisoformat(realtime_data["dienstregelingTijdstip"].replace('Z', '+00:00'))
+                                    current_delay = round((real_time - sched_time).total_seconds() / 60)
 
-                                            real_time = datetime.fromisoformat(
-                                                passage["real-timeTijdstip"].replace('Z', '+00:00')
-                                            )
-                                            sched_time = datetime.fromisoformat(
-                                                passage["dienstregelingTijdstip"].replace('Z', '+00:00')
-                                            )
+                                    # Always use the most recent data
+                                    latest_real_time = real_time
+                                    latest_delay = current_delay
 
-                                            if real_time.date() == today:
-                                                if latest_time is None or real_time > latest_time:
-                                                    delay = round((real_time - sched_time).total_seconds() / 60)
-                                                    latest_delay = delay
-                                                    latest_time = real_time
+                                    _LOGGER.info(
+                                        "New delay data for %s: %d minutes at %s",
+                                        device_id,
+                                        current_delay,
+                                        real_time.strftime("%H:%M:%S")
+                                    )
 
-                                if latest_delay is not None:
-                                    self._latest_delays[device_id] = latest_delay
-                                    self._last_update_time[device_id] = now
+                                    # Update stored values
+                                    self._latest_delays[device_id] = current_delay
+                                    self._last_update_time[device_id] = real_time
 
                             data[device_id] = {
                                 "schedule": schedule_times,
                                 "realtime": realtime_data,
                                 "device_info": device,
-                                "latest_delay": self._latest_delays.get(device_id, 0),
-                                "last_delay_update": self._last_update_time.get(device_id)
+                                "latest_delay": latest_delay if latest_delay is not None else self._latest_delays.get(device_id, 0),
+                                "last_delay_update": latest_real_time or self._last_update_time.get(device_id)
                             }
 
                     except Exception as err:
                         _LOGGER.error("Error updating device %s: %s", device_id, str(err))
-                        # Still add stored delay data even if update fails
                         data[device_id] = {
                             "schedule": [],
                             "realtime": {},
