@@ -195,7 +195,6 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
 
             elif self.entity_description.key == "delay":
                 realtime = device_data.get("realtime", {})
-
                 if realtime and realtime.get("realtime_time") and realtime.get("dienstregelingTijdstip"):
                     real_time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
                     sched_time = datetime.fromisoformat(realtime["dienstregelingTijdstip"].replace('Z', '+00:00'))
@@ -207,17 +206,22 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                             self._device[CONF_LINE_NUMBER]
                         )
                     return delay
-
-                return None  # Return None (unknown) when no realtime data is available
+                return None
 
             elif self.entity_description.key == "latest_delay":
+                # First check for current realtime data
                 realtime = device_data.get("realtime", {})
                 latest_delay = device_data.get("latest_delay")
 
-                # Only return the latest delay if we have realtime data
                 if realtime and realtime.get("realtime_time") and latest_delay is not None:
                     return latest_delay
-                return None  # Return None if no realtime data is available
+
+                # If no current realtime data, check stored delay for today
+                stored_delay = device_data.get("stored_delay")
+                if stored_delay and stored_delay.get('delay') is not None:
+                    return stored_delay['delay']
+
+                return None
 
 
         except Exception as err:
@@ -248,9 +252,9 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             }
 
             if self.entity_description.key == "latest_delay":
-                last_update = device_data.get("last_delay_update")
-                if last_update:
-                    attributes["last_delay_update"] = last_update.isoformat()
+                stored_delay = device_data.get("stored_delay")
+                if stored_delay and stored_delay.get('timestamp'):
+                    attributes["last_delay_update"] = stored_delay['timestamp'].isoformat()
 
             realtime = device_data.get("realtime", {})
             if realtime:

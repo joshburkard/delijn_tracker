@@ -85,7 +85,7 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
         self.api = api
         self.entry = entry
         self.devices = entry.data.get("devices", [])
-        self._latest_delays = {}  # Store latest delays per device
+        self._latest_delays = {}  # Store latest delays per device and day
         self._last_update_time = {}  # Store when the delay was last updated
 
     async def _async_update_data(self):
@@ -95,6 +95,7 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                 data = {}
                 now = datetime.now()
                 today = now.date()
+                today_str = today.isoformat()
 
                 for device in self.devices:
                     try:
@@ -103,6 +104,9 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                         target_time = device[CONF_SCHEDULED_TIME].split("T")[1][:5]
                         entity_number = device.get("entity_number")
                         device_id = f"{halte}_{line}_{target_time}"
+
+                        # Initialize delay storage for today if not exists
+                        device_delays = self._latest_delays.setdefault(device_id, {})
 
                         schedule_times = await self.api.get_schedule_times(
                             halte,
@@ -140,16 +144,25 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                                         real_time.strftime("%H:%M:%S")
                                     )
 
-                                    # Update stored values
-                                    self._latest_delays[device_id] = current_delay
-                                    self._last_update_time[device_id] = real_time
+                                    # Store delay for today
+                                    device_delays[today_str] = {
+                                        'delay': current_delay,
+                                        'timestamp': real_time
+                                    }
+
+                            # Clean up old delay data
+                            old_dates = [date for date in device_delays.keys()
+                                       if datetime.fromisoformat(date).date() < today]
+                            for date in old_dates:
+                                del device_delays[date]
 
                             data[device_id] = {
                                 "schedule": schedule_times,
                                 "realtime": realtime_data,
                                 "device_info": device,
-                                "latest_delay": latest_delay if latest_delay is not None else self._latest_delays.get(device_id, 0),
-                                "last_delay_update": latest_real_time or self._last_update_time.get(device_id)
+                                "latest_delay": latest_delay,
+                                "last_delay_update": latest_real_time,
+                                "stored_delay": device_delays.get(today_str)
                             }
 
                     except Exception as err:
@@ -158,8 +171,9 @@ class DeLijnDataUpdateCoordinator(DataUpdateCoordinator):
                             "schedule": [],
                             "realtime": {},
                             "device_info": device,
-                            "latest_delay": self._latest_delays.get(device_id, 0),
-                            "last_delay_update": self._last_update_time.get(device_id)
+                            "latest_delay": None,
+                            "last_delay_update": None,
+                            "stored_delay": self._latest_delays.get(device_id, {}).get(today_str)
                         }
                         continue
 
