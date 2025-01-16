@@ -1,6 +1,7 @@
 
 | Version | Description |
 | --- | --- |
+| 2025.01.16.00016 | added delay counter |
 | 2025.01.16.00015 | preserve datas for 'last known delay' sensor |
 | 2025.01.16.00014 | display public line number in config flow |
 | 2025.01.16.00013 | added sensor 'scheduled time' and adjusted 'expected time' and 'last known delay' |

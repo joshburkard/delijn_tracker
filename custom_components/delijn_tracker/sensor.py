@@ -58,6 +58,12 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement=None,
         #device_class=SensorDeviceClass.TIMESTAMP,
     ),
+    SensorEntityDescription(
+        key="delay_counter",
+        name="Delay Counter",
+        icon="mdi:counter",
+        native_unit_of_measurement=None,
+    ),
 )
 
 class DeLijnSensor(CoordinatorEntity, SensorEntity):
@@ -150,6 +156,10 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
 
                 return None
 
+            elif self.entity_description.key == "delay_counter":
+                delay_stats = device_data.get("delay_stats", {})
+                return delay_stats.get("delay_counter", 0)
+
             elif self.entity_description.key == "expected_time":
                 realtime = device_data.get("realtime", {})
 
@@ -216,10 +226,15 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                 if realtime and realtime.get("realtime_time") and latest_delay is not None:
                     return latest_delay
 
-                # If no current realtime data, check stored delay for today
-                stored_delay = device_data.get("stored_delay")
-                if stored_delay and stored_delay.get('delay') is not None:
-                    return stored_delay['delay']
+                # If no current realtime data, check stored delay
+                last_known_delay = device_data.get("last_known_delay")
+                last_delay_date = device_data.get("last_delay_date")
+
+                if last_known_delay is not None and last_delay_date:
+                    # Only use last known delay if it's from today
+                    today = datetime.now().date().isoformat()
+                    if last_delay_date == today:
+                        return last_known_delay
 
                 return None
 
@@ -231,6 +246,11 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return additional attributes."""
+        from .const import (
+            DELAY_HIGH_LABEL, DELAY_MEDIUM_LABEL, DELAY_LOW_LABEL,
+            EARLY_HIGH_LABEL, EARLY_MEDIUM_LABEL, EARLY_LOW_LABEL
+        )
+
         if not self.coordinator.data:
             return None
 
@@ -251,10 +271,33 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                 "public_line": self._device.get("public_line"),
             }
 
+            if self.entity_description.key == "delay_counter":
+                delay_stats = device_data.get("delay_stats", {})
+                attributes.update({
+                    DELAY_HIGH_LABEL: delay_stats.get("high_delay", 0),
+                    DELAY_MEDIUM_LABEL: delay_stats.get("medium_delay", 0),
+                    DELAY_LOW_LABEL: delay_stats.get("low_delay", 0),
+                    EARLY_HIGH_LABEL: delay_stats.get("high_early", 0),
+                    EARLY_MEDIUM_LABEL: delay_stats.get("medium_early", 0),
+                    EARLY_LOW_LABEL: delay_stats.get("low_early", 0),
+                })
+
+                # Add last delay date if available
+                if device_data.get("last_delay_date"):
+                    attributes["Last Delay Date"] = device_data["last_delay_date"]
+
             if self.entity_description.key == "latest_delay":
-                stored_delay = device_data.get("stored_delay")
-                if stored_delay and stored_delay.get('timestamp'):
-                    attributes["last_delay_update"] = stored_delay['timestamp'].isoformat()
+                last_update = device_data.get("last_delay_update")
+                if last_update:
+                    attributes["last_delay_update"] = last_update.isoformat()
+
+                # Add last known delay information
+                last_known_delay = device_data.get("last_known_delay")
+                last_delay_date = device_data.get("last_delay_date")
+                if last_known_delay is not None:
+                    attributes["last_known_delay"] = last_known_delay
+                if last_delay_date:
+                    attributes["last_delay_date"] = last_delay_date
 
             realtime = device_data.get("realtime", {})
             if realtime:
