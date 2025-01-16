@@ -144,7 +144,7 @@ class DeLijnTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_halte()
 
         line_options = {
-            str(line["lijnnummer"]): f"Line {line['lijnnummer']} - {line.get('omschrijving', '')}"
+            str(line["lijnnummer"]): f"Line {line['lijnnummerPubliek']} - {line.get('omschrijving', '')}"
             for line in self._available_lines
         }
 
