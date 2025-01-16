@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
+    SensorDeviceClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -49,6 +50,13 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
         name="Expected Time",
         icon="mdi:clock-outline",
         native_unit_of_measurement=None,
+    ),
+    SensorEntityDescription(
+        key="scheduled_time",
+        name="Scheduled Time",
+        icon="mdi:clock-time-four-outline",
+        native_unit_of_measurement=None,
+        #device_class=SensorDeviceClass.TIMESTAMP,
     ),
 )
 
@@ -130,7 +138,33 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
             if not schedule:
                 return None
 
-            if self.entity_description.key == "waiting_time":
+            if self.entity_description.key == "scheduled_time":
+                time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
+                return time.strftime("%H:%M")
+
+                #if schedule and schedule.get("timestamp"):
+                #    # Return the scheduled time as a timestamp
+                #    return datetime.fromisoformat(
+                #        schedule["timestamp"].replace('Z', '+00:00')
+                #    ).isoformat()
+
+                return None
+
+            elif self.entity_description.key == "expected_time":
+                realtime = device_data.get("realtime", {})
+
+                if realtime and realtime.get("realtime_time"):
+                    # Use realtime prediction if available
+                    time = datetime.fromisoformat(realtime["realtime_time"].replace('Z', '+00:00'))
+                    return time.strftime("%H:%M")
+                elif schedule and schedule.get("timestamp"):
+                    # Fall back to scheduled time
+                    time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
+                    return time.strftime("%H:%M")
+
+                return None
+
+            elif self.entity_description.key == "waiting_time":
                 now = datetime.now()
                 realtime = device_data.get("realtime", {})
 
@@ -174,35 +208,17 @@ class DeLijnSensor(CoordinatorEntity, SensorEntity):
                         )
                     return delay
 
-                return 0
+                return None  # Return None (unknown) when no realtime data is available
 
             elif self.entity_description.key == "latest_delay":
-                scheduled_time = self._device[CONF_SCHEDULED_TIME].split("T")[1][:5]
-                device_id = (
-                    f"{self._device[CONF_HALTE_NUMBER]}_"
-                    f"{self._device[CONF_LINE_NUMBER]}_"
-                    f"{scheduled_time}"
-                )
-                device_data = self.coordinator.data.get(device_id, {})
-
-                return device_data.get("latest_delay", 0)
-
-                return latest_delay
-
-            elif self.entity_description.key == "expected_time":
                 realtime = device_data.get("realtime", {})
+                latest_delay = device_data.get("latest_delay")
 
-                if realtime and realtime.get("real-timeTijdstip"):
-                    # Use realtime prediction if available
-                    time = datetime.fromisoformat(realtime["real-timeTijdstip"].replace('Z', '+00:00'))
-                    return time.strftime("%H:%M")
-                elif schedule and schedule.get("timestamp"):
-                    # Fall back to scheduled time
-                    time = datetime.fromisoformat(schedule["timestamp"].replace('Z', '+00:00'))
-                    return time.strftime("%H:%M")
+                # Only return the latest delay if we have realtime data
+                if realtime and realtime.get("realtime_time") and latest_delay is not None:
+                    return latest_delay
+                return None  # Return None if no realtime data is available
 
-                return None
-            return None
 
         except Exception as err:
             _LOGGER.error("Error getting native value: %s", err)
